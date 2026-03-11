@@ -16,6 +16,7 @@ class StorageService:
         self.secret_key = settings.minio_secret_key
         self.bucket_name = settings.minio_bucket_name
         self.public_url = settings.minio_public_url
+        self.browser_endpoint = settings.minio_browser_endpoint
 
         # Sync client for generating presigned URLs in synchronous contexts (e.g. model properties)
         self.sync_client = boto3.client(
@@ -30,13 +31,17 @@ class StorageService:
         Generates a presigned URL synchronously.
         """
         try:
-            return self.sync_client.generate_presigned_url(
+            url = self.sync_client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.bucket_name, "Key": object_key},
                 ExpiresIn=expires_in,
             )
         except Exception:
-            return f"{self.public_url}/{object_key}"
+            url = f"{self.public_url}/{object_key}"
+
+        if self.browser_endpoint:
+            url = url.replace(self.endpoint_url, self.browser_endpoint)
+        return url
 
     async def get_presigned_url(self, object_key: str, expires_in: int = 3600) -> str:
         """
@@ -54,10 +59,13 @@ class StorageService:
                     Params={"Bucket": self.bucket_name, "Key": object_key},
                     ExpiresIn=expires_in,
                 )
-                return url
         except Exception:
             # Fallback to public URL if presigning fails (though in prod we should log/error)
-            return f"{self.public_url}/{object_key}"
+            url = f"{self.public_url}/{object_key}"
+
+        if self.browser_endpoint:
+            url = url.replace(self.endpoint_url, self.browser_endpoint)
+        return url
 
     async def upload_file(
         self, file_name: str, file_content: bytes, content_type: str | None = None

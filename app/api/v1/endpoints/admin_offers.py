@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_db
 from app.core.exceptions import NotFoundError
 from app.core.security import get_current_admin
+from app.models.models import ProductAuditLog
 from app.repositories.offer import offer_repository
 from app.schemas.models import AdminOfferResponse, OfferCreate, OfferUpdate
 
@@ -16,9 +17,19 @@ router = APIRouter()
 async def create_offer(
     offer: OfferCreate,
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(get_current_admin),
+    current_admin: dict = Depends(get_current_admin),
 ) -> AdminOfferResponse:
     db_obj = await offer_repository.create(db, obj_in=offer)
+
+    audit_log = ProductAuditLog(
+        product_id=db_obj.product_id,
+        action="OFFER_ADD",
+        admin_username=current_admin.get("sub"),
+        changes=offer.model_dump(mode="json"),
+    )
+    db.add(audit_log)
+    await db.commit()
+
     return AdminOfferResponse.model_validate(db_obj)
 
 
@@ -53,10 +64,19 @@ async def update_offer(
 async def delete_offer(
     offer_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(get_current_admin),
+    current_admin: dict = Depends(get_current_admin),
 ) -> None:
     offer = await offer_repository.get(db, id=offer_id)
     if not offer:
         raise NotFoundError(message="Offer not found")
 
+    audit_log = ProductAuditLog(
+        product_id=offer.product_id,
+        action="OFFER_REMOVE",
+        admin_username=current_admin.get("sub"),
+        changes={"offer_id": str(offer.id), "seller_id": str(offer.seller_id)},
+    )
+    db.add(audit_log)
+
     await offer_repository.remove(db, id=offer_id)
+    await db.commit()

@@ -35,11 +35,13 @@ async def list_products(
 async def create_product(
     product: ProductCreate,
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(get_current_admin),
+    current_admin: dict = Depends(get_current_admin),
 ) -> ProductResponse:
     # Here we would strictly handle complex relationships insertion explicitly.
     # In base SQLALchemy context we just utilize naive dict packing for simplicity.
-    return await product_service.create_product(db, product_in=product)
+    return await product_service.create_product(
+        db, product_in=product, admin_username=current_admin.get("sub")
+    )
 
 
 @router.get("/{product_id}", response_model=ProductDetailResponse)
@@ -56,18 +58,22 @@ async def update_product(
     product_id: uuid.UUID,
     product_in: ProductUpdate,
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(get_current_admin),
+    current_admin: dict = Depends(get_current_admin),
 ) -> ProductResponse:
-    return await product_service.update_product(db, product_id=product_id, product_in=product_in)
+    return await product_service.update_product(
+        db, product_id=product_id, product_in=product_in, admin_username=current_admin.get("sub")
+    )
 
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_product(
     product_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(get_current_admin),
+    current_admin: dict = Depends(get_current_admin),
 ) -> None:
-    await product_service.delete_product(db, product_id=product_id)
+    await product_service.delete_product(
+        db, product_id=product_id, admin_username=current_admin.get("sub")
+    )
 
 
 @router.post("/{product_id}/image", response_model=ImageUploadResponse)
@@ -76,7 +82,7 @@ async def upload_product_image(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     storage: StorageService = Depends(get_storage_service),
-    _: dict = Depends(get_current_admin),
+    current_admin: dict = Depends(get_current_admin),
 ) -> ImageUploadResponse:
     return await product_service.upload_image(
         db,
@@ -85,6 +91,7 @@ async def upload_product_image(
         file_content=await file.read(),
         content_type=file.content_type,
         storage=storage,
+        admin_username=current_admin.get("sub"),
     )
 
 

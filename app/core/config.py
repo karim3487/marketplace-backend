@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     # MinIO
     minio_endpoint: str = "http://localhost:9000"
+    minio_browser_endpoint: str = "http://localhost:9000"
     minio_access_key: str = "admin"
     minio_secret_key: str = "changeme"
     minio_bucket_name: str = "products"

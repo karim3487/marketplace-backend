@@ -1,4 +1,6 @@
+import asyncio
 import uuid
+from concurrent.futures import ProcessPoolExecutor
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,10 +15,33 @@ from app.schemas.models import (
     ProductUpdate,
 )
 from app.services.storage import StorageService
-from app.utils.image import create_thumbnail
+from app.utils.image import process_image_variants
+
+executor = ProcessPoolExecutor()
 
 
 class ProductService:
+    async def _create_audit_log(
+        self,
+        db: AsyncSession,
+        product_id: uuid.UUID,
+        action: str,
+        admin_username: str | None = None,
+        changes: dict | None = None,
+    ) -> None:
+        """
+        Helper to create an audit log entry.
+        """
+        from app.models.models import ProductAuditLog
+
+        audit_log = ProductAuditLog(
+            product_id=product_id,
+            action=action,
+            admin_username=admin_username,
+            changes=changes,
+        )
+        db.add(audit_log)
+
     async def list_products(
         self, db: AsyncSession, limit: int, offset: int
     ) -> PaginatedResponse[ProductResponse]:
@@ -30,16 +55,13 @@ class ProductService:
     ) -> ProductResponse:
         db_obj = await product_repository.create(db, obj_in=product_in)
 
-        # Audit Log
-        from app.models.models import ProductAuditLog
-
-        audit_log = ProductAuditLog(
+        await self._create_audit_log(
+            db,
             product_id=db_obj.id,
             action="CREATE",
             admin_username=admin_username,
             changes=product_in.model_dump(mode="json"),
         )
-        db.add(audit_log)
         await db.commit()
 
         return ProductResponse.model_validate(db_obj)
@@ -86,12 +108,13 @@ class ProductService:
                 diff[k] = {"old": old_data.get(k), "new": new_data.get(k)}
 
         if diff:
-            from app.models.models import ProductAuditLog
-
-            audit_log = ProductAuditLog(
-                product_id=product_id, action="UPDATE", admin_username=admin_username, changes=diff
+            await self._create_audit_log(
+                db,
+                product_id=product_id,
+                action="UPDATE",
+                admin_username=admin_username,
+                changes=diff,
             )
-            db.add(audit_log)
             await db.commit()
 
         return ProductResponse.model_validate(updated_product)
@@ -103,12 +126,9 @@ class ProductService:
         if not product:
             raise NotFoundError(message="Product not found")
 
-        from app.models.models import ProductAuditLog
-
-        audit_log = ProductAuditLog(
-            product_id=product_id, action="DELETE", admin_username=admin_username, changes=None
+        await self._create_audit_log(
+            db, product_id=product_id, action="DELETE", admin_username=admin_username, changes=None
         )
-        db.add(audit_log)
         await product_repository.remove(db, id=product_id)
         await db.commit()
 
@@ -135,36 +155,59 @@ class ProductService:
         file_content: bytes,
         content_type: str | None,
         storage: StorageService,
+        admin_username: str | None = None,
     ) -> ImageUploadResponse:
         product = await product_repository.get(db, id=product_id)
         if not product:
             raise NotFoundError(message="Product not found")
 
-        # Upload original
-        object_key, url = await storage.upload_file(
-            file_name=file_name,
-            file_content=file_content,
-            content_type=content_type,
+        # Process image variants in ProcessPool (non-blocking)
+        loop = asyncio.get_running_loop()
+        variants = await loop.run_in_executor(
+            executor, process_image_variants, file_content, file_name
         )
 
-        # Generate and upload thumbnail
-        thumb_content = create_thumbnail(file_content)
-        thumb_filename = f"thumb_{file_name}"
-        thumb_key, thumb_url = await storage.upload_file(
-            file_name=thumb_filename, file_content=thumb_content, content_type="image/jpeg"
-        )
+        # Upload variants in parallel using asyncio.gather
+        full = variants["full"]
+        thumb = variants["thumb"]
+
+        upload_tasks = [
+            storage.upload_file(
+                file_name=full["name"],
+                file_content=full["content"],
+                content_type=full["content_type"],
+            ),
+            storage.upload_file(
+                file_name=thumb["name"],
+                file_content=thumb["content"],
+                content_type=thumb["content_type"],
+            ),
+        ]
+
+        # obj_key_url = (object_key, url)
+        (obj_key, url), (thumb_key, thumb_url) = await asyncio.gather(*upload_tasks)
 
         # Persist both keys
         await product_repository.update(
             db,
             db_obj=product,
-            obj_in={"image_object_key": object_key, "thumbnail_object_key": thumb_key},
+            obj_in={"image_object_key": obj_key, "thumbnail_object_key": thumb_key},
         )
+
+        await self._create_audit_log(
+            db,
+            product_id=product_id,
+            action="IMAGE_UPLOAD",
+            admin_username=admin_username,
+            changes={"image_object_key": obj_key, "thumbnail_object_key": thumb_key},
+        )
+
+        await db.commit()
 
         return ImageUploadResponse(
             image_url=url,
             thumbnail_url=thumb_url,
-            object_key=object_key,
+            object_key=obj_key,
         )
 
 
