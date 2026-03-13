@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_db
 from app.schemas.models import PaginatedResponse, ProductDetailResponse, ProductListItem
 from app.services.catalog_service import catalog_service
+from app.services.storage import storage_service
 
 router = APIRouter()
 
@@ -21,7 +22,9 @@ async def get_products(
     Retrieve a paginated list of products for infinite scroll.
     Computes 'nearest_delivery_date' locally from early relation load.
     """
-    return await catalog_service.get_products(db, limit=limit, offset=offset)
+    return await catalog_service.get_products(
+        db, limit=limit, offset=offset, storage=storage_service
+    )
 
 
 @router.get("/products/{product_id}", response_model=ProductDetailResponse)
@@ -36,5 +39,5 @@ async def get_product_details(
     Get detailed product layout, incorporating explicitly sorted embedded offers.
     """
     return await catalog_service.get_product_details(
-        db, product_id=product_id, offers_sort=offers_sort
+        db, product_id=product_id, offers_sort=offers_sort, storage=storage_service
     )
