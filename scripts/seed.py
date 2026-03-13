@@ -3,7 +3,7 @@ import os
 import random
 import sys
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 # Ensure the parent directory is in sys.path to find 'app'
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -52,6 +52,7 @@ async def seed():
         await session.flush()
 
         print("Seeding products, attributes, and offers...")
+        today = date.today()
         for i in range(100):
             # 1. Product
             product = Product(
@@ -80,15 +81,15 @@ async def seed():
             num_offers = random.randint(2, 10)
             offer_sellers = random.choices(sellers, k=num_offers)
             for seller in offer_sellers:
-                # Target dates: March 2 to 8, 2026
-                delivery_day = random.randint(2, 8)
+                # Delivery date: within the next 7 days
+                delivery_delay = random.randint(0, 7)
                 offer = Offer(
                     id=uuid.uuid4(),
                     product_id=product.id,
                     seller_id=seller.id,
                     price_amount=round(product.price_amount * random.uniform(0.8, 1.2), 2),
                     price_currency="RUB",
-                    delivery_date=date(2026, 3, delivery_day),
+                    delivery_date=today + timedelta(days=delivery_delay),
                 )
                 session.add(offer)
 

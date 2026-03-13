@@ -24,7 +24,7 @@ class CurrencyCode(StrEnum):
 
 class Money(BaseModel):
     amount: float = Field(..., ge=0)
-    currency: CurrencyCode = CurrencyCode.KGS
+    currency: CurrencyCode = CurrencyCode.RUB
 
 
 class Token(BaseModel):
@@ -86,7 +86,7 @@ class ProductResponse(ProductBase):
 class ProductListItem(BaseModel):
     id: uuid.UUID
     name: str
-    thumbnail_url: str | None
+    thumbnail_url: str | None = None
     price: Money
     stock: int
     nearest_delivery_date: date | None = None

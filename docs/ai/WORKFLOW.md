@@ -285,8 +285,94 @@ Image processing is a CPU-intensive task that blocks the Python event loop, sign
 **Engineering Decisions & Reasoning**: 
 Implemented audit logging for the `IMAGE_UPLOAD` action to maintain a traceable history of product assets. Additionally, updated the administrative endpoints (`create`, `update`, `delete`, `upload_image`) to correctly capture the `admin_username` from the authentication context, ensuring that audit logs are attributed to the correct performing user.
 
+## Phase 17: Database Lifecycle & Migration Fix
+
+**Decision**: Resolved a `relation "users" does not exist` error by synchronizing the PostgreSQL schema with current models and seeding necessary administrative access.
+
+- **AI Tools Used**: `fastapi-pro`, `postgresql-optimization`, `debugger`.
+- **Iteration Process**: Identified missing table via traceback → Executed `alembic upgrade head` to apply pending migrations (`135481e7826e` -> `00fe8a520f58`) → Ran `create_admin.py` to restore authentication access → Seeded 100 products via `seed.py` to restore application state.
+- **Checks Performed**:
+  - `make migrate-up` — Verified migration 00fe8a520f58 applied.
+  - `make create-admin` — Confirmed 'admin' user creation.
+  - `make seed` — Verified 100 products added.
+- **Engineering Decisions & Reasoning**:
+  - **Schema Desync**: The error occurred because the backend code expected a `users` table introduced in a recent migration that hadn't been applied to the local database container.
+  - **Data Integrity**: Seeding was performed alongside the migration fix to ensure that any local development data lost during previous container resets was restored, allowing the frontend (Catalog and Admin pages) to function correctly immediately.
+
+## Phase 18: ProductListItem Validation Fix
+
+**Decision**: Resolved a Pydantic `ValidationError` where `thumbnail_url` was missing when mapping from the SQLAlchemy `Product` model to the `ProductListItem` schema.
+
+- **AI Tools Used**: `fastapi-pro`, `debugger`, `ruff`.
+- **Iteration Process**: Analyzed traceback → Identified missing default value in `ProductListItem` schema → Updated `app/schemas/models.py` to include `= None` → Verified with `ruff`.
+- **Checks Performed**:
+  - `ruff check` — Passed.
+- **Engineering Decisions & Reasoning**:
+  - **Pydantic 2.x Behavior**: In Pydantic 2, fields marked as `Optional` or `str | None` are still considered mandatory unless a default value is provided. Since the `Product` database model does not have a `thumbnail_url` attribute (the URL is injected later by the service layer), `model_validate(from_attributes=True)` failed. Adding `= None` allows the schema to be initialized with a null value before the service layer populates it with a presigned URL.
+
 ## [2026-03-11] - Audit Logging for Image Uploads
 - **AI Tools Used**: `fastapi-pro`, `vue-tsc`, `ruff`.
 - **Iteration Process**: Plan -> Backend Implementation (ProductService & Repository) -> Frontend Implementation (ProductEditPage refresh) -> Verification (ruff).
 - **Checks Performed**: `ruff check --fix`, `ruff format`.
 - **Engineering Decisions & Reasoning**: Chose to log image uploads as "UPDATE" actions in the existing audit log system. Fetched the performing user's name from the database to provide clear attribution in the log message. Implemented a centralized `refreshData` helper in the frontend to ensure UI consistency.
+
+## Phase 19: Backend Testing Framework Standardization
+
+**Decision**: Stabilized the backend test suite by resolving asynchronous loop mismatches and standardizing environment-aware configuration.
+
+- **AI Tools Used**: `pytest-asyncio`, `fastapi-pro`, `ruff`, `uv`.
+- **Iteration Process**: 
+  1. Identified hardcoded test database URLs causing volume conflicts.
+  2. Fixed `conftest.py` to derive `TEST_DATABASE_URL` from application settings.
+  3. Configured `pytest.ini` with `asyncio_default_test_loop_scope = session` to harmonize fixture and test lifecycle scopes.
+  4. Consolidated duplicate smoke tests into a clean directory structure.
+  5. Verified all 9 tests pass in 1.94s.
+
+**Checks Performed**:
+- `uv run pytest` — 100% pass (9 tests).
+- `ruff check --fix` and `ruff format` — Ensured `conftest.py` adheres to strict formatting rules.
+- `uv sync` — Verified dependency integrity.
+
+**Engineering Decisions & Reasoning**:
+- **Loop Harmonization**: The `RuntimeError: Task attached to a different loop` was caused by fixtures creating the engine in one session loop while tests ran in individual function loops. Moving to `session` scope for both ensures a single, stable event loop for the entire test run, which is faster and prevents leaks.
+- **Environment Parity**: Derived the test database URL dynamically to ensure that if a developer changes the main `POSTGRES_DB` name in `.env`, the test suite automatically adapts by appending `_test`, preventing accidental data loss in development environments.
+
+## Phase 20: SOLID Refactoring (Repository & Service Layers)
+
+**Decision**: Refactor the backend to strictly adhere to SOLID principles, specifically improving the "D" (Dependency Inversion) and "S" (Single Responsibility) aspects.
+
+- **AI Tools Used**: `fastapi-pro`, `python-pro`, `clean-code`, `architect-review`.
+- **Iteration Process**: 
+  1. **Interface Definition**: Created `app/repositories/interfaces.py` to define abstract base classes for all repositories.
+  2. **Repository Refactoring**: Updated `BaseRepository`, `ProductRepository`, `OfferRepository`, and `SellerRepository` to implement their respective interfaces.
+  3. **Dependency Inversion**: Refactored `ProductService` and `AuthService` to depend on interfaces rather than concrete implementations, utilizing FastAPI's dependency injection system to provide the concrete instances.
+  4. **Verification**: Ran `pytest` and `ruff` to ensure system stability and code quality.
+
+**Checks Performed**:
+- `uv run pytest` — 100% pass (9 tests).
+- `uv run ruff check --fix` and `uv run ruff format` — Code is compliant with strict standards.
+- Manual inspection of dependency injection patterns in `app/api/dependencies.py`.
+
+**Engineering Decisions & Reasoning**:
+- **Single Responsibility (S)**: Decoupled data access logic into interfaces and concrete repositories, ensuring each class has a single reason to change.
+- **Dependency Inversion (D)**: By depending on abstractions (interfaces), the services are no longer tightly coupled to specific SQLAlchemy implementations. This makes the system more testable (easier to mock) and maintainable (easier to swap storage backends if needed).
+- **Interface Segregation (I)**: Focused interfaces (e.g., `IProductRepository`) prevent services from being forced to depend on methods they don't use.
+
+## Phase 21: Unit Testing Improvement
+
+**Decision**: Enhance unit test coverage for core business logic in repositories and services, ensuring reliability and edge-case handling.
+
+- **AI Tools Used**: `pytest`, `fastapi-pro`, `python-pro`.
+- **Iteration Process**: 
+  1. **Test Expansion**: Created `app/tests/test_units.py` specifically for unit testing repositories (`AuthRepository`, `SellerRepository`, `ProductRepository`, `OfferRepository`).
+  2. **Logic Validation**: Implemented detailed test cases for password hashing, seller CRUD, product lifecycle, and offer management.
+  3. **Regression Testing**: Ran the full suite to verify new tests passing alongside existing smoke tests.
+  4. **Verification**: Checked code style with `ruff` and verified all 13 tests (9 smoke + 4 unit) pass.
+
+**Checks Performed**:
+- `uv run pytest` — 100% pass (13 tests: 9 smoke, 4 unit).
+- `uv run ruff check --fix` and `uv run ruff format` — Verified code cleanliness.
+
+**Engineering Decisions & Reasoning**:
+- **Deep Logic Testing**: While smoke tests verify end-to-end connectivity, unit tests target internal logic branches (like password hashing and complex repository queries) to catch subtle bugs before they reach API handlers.
+- **Isolated Contexts**: Used per-test async database sessions to ensure test isolation and prevent state leakage between runs.
