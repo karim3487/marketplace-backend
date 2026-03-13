@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from concurrent.futures import ProcessPoolExecutor
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,13 +43,43 @@ class ProductService:
         )
         db.add(audit_log)
 
+    async def _map_product_to_response(self, product: Any) -> ProductResponse:
+        """
+        Helper to map a Product model to a ProductResponse schema and inject presigned URLs.
+        """
+        from app.services.storage import storage_service
+
+        data = ProductResponse.model_validate(product)
+        if product.image_object_key:
+            data.image_url = await storage_service.get_presigned_url(product.image_object_key)
+        if product.thumbnail_object_key:
+            data.thumbnail_url = await storage_service.get_presigned_url(
+                product.thumbnail_object_key
+            )
+        return data
+
+    async def _map_product_to_detail_response(self, product: Any) -> ProductDetailResponse:
+        """
+        Helper to map a Product model to a ProductDetailResponse schema and inject presigned URLs.
+        """
+        from app.services.storage import storage_service
+
+        data = ProductDetailResponse.model_validate(product)
+        if product.image_object_key:
+            data.image_url = await storage_service.get_presigned_url(product.image_object_key)
+        if product.thumbnail_object_key:
+            data.thumbnail_url = await storage_service.get_presigned_url(
+                product.thumbnail_object_key
+            )
+        return data
+
     async def list_products(
         self, db: AsyncSession, limit: int, offset: int
     ) -> PaginatedResponse[ProductResponse]:
         products = await product_repository.get_many_paginated(db, limit=limit, offset=offset)
-        results = [ProductResponse.model_validate(p) for p in products]
+        results = await asyncio.gather(*[self._map_product_to_response(p) for p in products])
         next_cursor = str(offset + limit) if len(products) == limit else None
-        return PaginatedResponse(items=results, next_cursor=next_cursor)
+        return PaginatedResponse(items=list(results), next_cursor=next_cursor)
 
     async def create_product(
         self, db: AsyncSession, product_in: ProductCreate, admin_username: str | None = None
@@ -64,13 +95,13 @@ class ProductService:
         )
         await db.commit()
 
-        return ProductResponse.model_validate(db_obj)
+        return await self._map_product_to_response(db_obj)
 
     async def get_product(self, db: AsyncSession, product_id: uuid.UUID) -> ProductResponse:
         product = await product_repository.get(db, id=product_id)
         if not product:
             raise NotFoundError(message="Product not found")
-        return ProductResponse.model_validate(product)
+        return await self._map_product_to_response(product)
 
     async def get_product_detail(
         self, db: AsyncSession, product_id: uuid.UUID
@@ -80,7 +111,7 @@ class ProductService:
         )
         if not product:
             raise NotFoundError(message="Product not found")
-        return ProductDetailResponse.model_validate(product)
+        return await self._map_product_to_detail_response(product)
 
     async def update_product(
         self,
@@ -93,12 +124,14 @@ class ProductService:
         if not product:
             raise NotFoundError(message="Product not found")
 
-        # Audit Diff Calculation
-        old_data = ProductResponse.model_validate(product).model_dump(
+        # Audit Diff Calculation - mapping to response manually to compare
+        old_resp = await self._map_product_to_response(product)
+        old_data = old_resp.model_dump(
             mode="json", exclude={"created_at", "updated_at", "image_url", "thumbnail_url"}
         )
         updated_product = await product_repository.update(db, db_obj=product, obj_in=product_in)
-        new_data = ProductResponse.model_validate(updated_product).model_dump(
+        new_resp = await self._map_product_to_response(updated_product)
+        new_data = new_resp.model_dump(
             mode="json", exclude={"created_at", "updated_at", "image_url", "thumbnail_url"}
         )
 
@@ -117,7 +150,7 @@ class ProductService:
             )
             await db.commit()
 
-        return ProductResponse.model_validate(updated_product)
+        return new_resp
 
     async def delete_product(
         self, db: AsyncSession, product_id: uuid.UUID, admin_username: str | None = None

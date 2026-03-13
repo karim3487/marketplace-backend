@@ -29,11 +29,17 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
+    errors = exc.errors()
+    # Normalize errors to ensure they are JSON serializable (e.g. handle bytes in 'input')
+    for error in errors:
+        if "input" in error and isinstance(error["input"], bytes):
+            error["input"] = error["input"].decode("utf-8", errors="replace")
+
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "error": "validation_error",
             "message": "Input validation failed",
-            "details": {"errors": exc.errors()},
+            "details": {"errors": errors},
         },
     )

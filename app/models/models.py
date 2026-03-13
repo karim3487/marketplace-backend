@@ -31,22 +31,6 @@ class Product(Base):
     def price(self) -> dict:
         return {"amount": self.price_amount, "currency": self.price_currency}
 
-    @property
-    def image_url(self) -> str | None:
-        if not self.image_object_key:
-            return None
-        from app.services.storage import storage_service
-
-        return storage_service.get_presigned_url_sync(self.image_object_key)
-
-    @property
-    def thumbnail_url(self) -> str | None:
-        if not self.thumbnail_object_key:
-            return None
-        from app.services.storage import storage_service
-
-        return storage_service.get_presigned_url_sync(self.thumbnail_object_key)
-
     # Relationships
     attributes: Mapped[list["ProductAttribute"]] = relationship(
         back_populates="product", cascade="all, delete-orphan"

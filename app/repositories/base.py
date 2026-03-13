@@ -11,6 +11,25 @@ class BaseRepository[ModelType, CreateSchemaType: BaseModel, UpdateSchemaType: B
     def __init__(self, model: type[ModelType]):
         self.model = model
 
+    def _preprocess_data(self, data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Hook for preprocessing data before database operations.
+        Useful for flattening nested Pydantic models (e.g. Money).
+        """
+        processed = data.copy()
+
+        # Generic Money flattening: if a field 'foo' is a dict with 'amount'/'currency',
+        # flatten it into 'foo_amount' and 'foo_currency'.
+        fields_to_process = list(processed.keys())
+        for field in fields_to_process:
+            value = processed[field]
+            if isinstance(value, dict) and "amount" in value and "currency" in value:
+                processed[f"{field}_amount"] = value["amount"]
+                processed[f"{field}_currency"] = value.get("currency", "RUB")
+                del processed[field]
+
+        return processed
+
     async def get(self, db: AsyncSession, id: Any) -> ModelType | None:
         """Get by ID."""
         result = await db.execute(select(self.model).where(self.model.id == id))
@@ -21,57 +40,31 @@ class BaseRepository[ModelType, CreateSchemaType: BaseModel, UpdateSchemaType: B
         result = await db.execute(select(self.model).offset(skip).limit(limit))
         return list(result.scalars().all())
 
-    def _normalize_money_input(self, data: dict) -> dict:
-        """Flattens nested 'price' object into 'price_amount' and 'price_currency'."""
-        if "price" in data and isinstance(data["price"], dict):
-            price_data = data.pop("price")
-            data["price_amount"] = price_data.get("amount")
-            data["price_currency"] = price_data.get("currency", "RUB")
-        return data
+    async def create(
+        self, db: AsyncSession, obj_in: CreateSchemaType | dict[str, Any]
+    ) -> ModelType:
+        """Create new record."""
+        obj_in_data = obj_in if isinstance(obj_in, dict) else obj_in.model_dump()
+        obj_in_data = self._preprocess_data(obj_in_data)
 
-    async def create(self, db: AsyncSession, obj_in: CreateSchemaType) -> ModelType:
-        """Create new record with flattened money fields."""
-        data = self._normalize_money_input(obj_in.model_dump())
-        # Handle attributes separately if they exist in schema
-        attributes_data = data.pop("attributes", None)
-
-        db_obj = self.model(**data)
-        if attributes_data and hasattr(db_obj, "attributes"):
-            from app.models.models import ProductAttribute
-
-            db_obj.attributes = [ProductAttribute(**attr) for attr in attributes_data]
-
+        db_obj = self.model(**obj_in_data)
         db.add(db_obj)
         await db.flush()
-        # Re-fetch to ensure all relationships (like attributes) are loaded
-        # We use self.get() which can be overridden in subclasses for eager loading
-        return await self.get(db, db_obj.id)
+        return db_obj
 
     async def update(
         self, db: AsyncSession, db_obj: ModelType, obj_in: UpdateSchemaType | dict[str, Any]
     ) -> ModelType:
-        """Update record with flattened money fields."""
+        """Update record."""
         update_data = obj_in if isinstance(obj_in, dict) else obj_in.model_dump(exclude_unset=True)
-        update_data = self._normalize_money_input(update_data)
+        update_data = self._preprocess_data(update_data)
 
         for field, value in update_data.items():
-            if field == "attributes" and hasattr(db_obj, "attributes"):
-                # Check if attributes actually changed
-                from app.models.models import ProductAttribute
-
-                current_attrs = {attr.key: attr.value for attr in db_obj.attributes}
-                new_attrs = {attr["key"]: attr["value"] for attr in value}
-
-                if current_attrs != new_attrs:
-                    # For prototype, we just replace all attributes if there is a change
-                    db_obj.attributes = [ProductAttribute(**attr) for attr in value]
-            else:
-                setattr(db_obj, field, value)
+            setattr(db_obj, field, value)
 
         db.add(db_obj)
         await db.flush()
-        # Re-fetch to ensure all relationships (like attributes) are loaded
-        return await self.get(db, db_obj.id)
+        return db_obj
 
     async def remove(self, db: AsyncSession, id: Any) -> bool:
         """Delete record."""

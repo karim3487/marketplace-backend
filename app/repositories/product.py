@@ -1,11 +1,11 @@
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.models import Offer, Product
+from app.models.models import Offer, Product, ProductAttribute
 from app.repositories.base import BaseRepository
 from app.schemas.models import ProductCreate, ProductUpdate
 
@@ -13,6 +13,50 @@ from app.schemas.models import ProductCreate, ProductUpdate
 class ProductRepository(BaseRepository[Product, ProductCreate, ProductUpdate]):
     def __init__(self) -> None:
         super().__init__(Product)
+
+    def _normalize_input(self, data: dict) -> dict:
+        """Flatten nested 'price' object into 'price_amount' and 'price_currency'."""
+        if "price" in data and isinstance(data["price"], dict):
+            price_data = data.pop("price")
+            data["price_amount"] = price_data.get("amount")
+            data["price_currency"] = price_data.get("currency", "RUB")
+        return data
+
+    async def create(self, db: AsyncSession, obj_in: ProductCreate | dict[str, Any]) -> Product:
+        """Create new record with flattened money and attributes."""
+        data = obj_in if isinstance(obj_in, dict) else obj_in.model_dump()
+        data = self._normalize_input(data)
+
+        attributes_data = data.pop("attributes", None)
+
+        db_obj = self.model(**data)
+        if attributes_data:
+            db_obj.attributes = [ProductAttribute(**attr) for attr in attributes_data]
+
+        db.add(db_obj)
+        await db.flush()
+        return await self.get(db, db_obj.id)
+
+    async def update(
+        self, db: AsyncSession, db_obj: Product, obj_in: ProductUpdate | dict[str, Any]
+    ) -> Product:
+        """Update record with flattened money and attributes."""
+        update_data = obj_in if isinstance(obj_in, dict) else obj_in.model_dump(exclude_unset=True)
+        update_data = self._normalize_input(update_data)
+
+        for field, value in update_data.items():
+            if field == "attributes":
+                current_attrs = {attr.key: attr.value for attr in db_obj.attributes}
+                new_attrs = {attr["key"]: attr["value"] for attr in value}
+
+                if current_attrs != new_attrs:
+                    db_obj.attributes = [ProductAttribute(**attr) for attr in value]
+            else:
+                setattr(db_obj, field, value)
+
+        db.add(db_obj)
+        await db.flush()
+        return await self.get(db, db_obj.id)
 
     async def get(self, db: AsyncSession, id: uuid.UUID) -> Product | None:
         """Fetch product with attributes."""
