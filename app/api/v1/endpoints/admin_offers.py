@@ -50,13 +50,34 @@ async def update_offer(
     offer_id: uuid.UUID,
     offer_in: OfferUpdate,
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(get_current_admin),
+    current_admin: dict = Depends(get_current_admin),
 ) -> AdminOfferResponse:
     offer = await offer_repository.get(db, id=offer_id)
     if not offer:
         raise NotFoundError(message="Offer not found")
 
+    # Capture changes for audit log
+    old_data = AdminOfferResponse.model_validate(offer).model_dump(mode="json")
     updated_offer = await offer_repository.update(db, db_obj=offer, obj_in=offer_in)
+    new_data = AdminOfferResponse.model_validate(updated_offer).model_dump(mode="json")
+
+    # Simple diff
+    diff = {}
+    update_dict = offer_in.model_dump(exclude_unset=True)
+    for key in update_dict:
+        if old_data.get(key) != new_data.get(key):
+            diff[key] = {"old": old_data.get(key), "new": new_data.get(key)}
+
+    if diff:
+        audit_log = ProductAuditLog(
+            product_id=updated_offer.product_id,
+            action="OFFER_UPDATE",
+            admin_username=current_admin.get("sub"),
+            changes={"offer_id": str(offer_id), "diff": diff},
+        )
+        db.add(audit_log)
+        await db.commit()
+
     return AdminOfferResponse.model_validate(updated_offer)
 
 

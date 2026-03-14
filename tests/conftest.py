@@ -1,5 +1,7 @@
+import asyncpg
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.api.dependencies import get_db
@@ -11,8 +13,27 @@ from app.models.base import Base
 TEST_DATABASE_URL = settings.database_url + "_test"
 
 
+async def create_test_db():
+    """Create the test database if it doesn't exist."""
+    url = make_url(settings.database_url)
+    # Connect to the default 'postgres' database to issue CREATE DATABASE
+    # Note: asyncpg connection string doesn't use the +asyncpg prefix
+    conn_str = f"postgresql://{url.username}:{url.password}@{url.host}:{url.port}/postgres"
+
+    conn = await asyncpg.connect(conn_str)
+    try:
+        db_exists = await conn.fetchval(
+            "SELECT 1 FROM pg_database WHERE datname = $1", "marketplace_test"
+        )
+        if not db_exists:
+            await conn.execute("CREATE DATABASE marketplace_test")
+    finally:
+        await conn.close()
+
+
 @pytest.fixture(scope="session")
 async def engine():
+    await create_test_db()
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
     yield engine
     await engine.dispose()
